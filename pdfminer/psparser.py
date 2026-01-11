@@ -2,6 +2,7 @@
 import contextlib
 import io
 import logging
+import os
 import re
 from collections.abc import Iterator
 from typing import (
@@ -16,6 +17,37 @@ from pdfminer import psexceptions, settings
 from pdfminer.utils import choplist
 
 log = logging.getLogger(__name__)
+
+# Rust tokenizer configuration
+# - PDFMINER_DISABLE_RUST=1: Force Python tokenizer (for debugging/comparison)
+# - PDFMINER_REQUIRE_RUST=1: Fail if Rust tokenizer unavailable (for CI/testing)
+# - Default: Try Rust, warn and fall back to Python if unavailable
+_DISABLE_RUST = os.environ.get("PDFMINER_DISABLE_RUST", "")
+_REQUIRE_RUST = os.environ.get("PDFMINER_REQUIRE_RUST", "")
+
+_USE_RUST_TOKENIZER = False
+_USE_RUST_STACK_PARSER = False
+RustTokenizer: Any = None
+RustStackParser: Any = None
+
+if _DISABLE_RUST:
+    log.debug("Rust parsers disabled via PDFMINER_DISABLE_RUST")
+else:
+    try:
+        from pdfminer_rust import RustTokenizer, RustStackParser
+        _USE_RUST_TOKENIZER = True
+        _USE_RUST_STACK_PARSER = True
+        log.debug("Using Rust tokenizer and stack parser")
+    except ImportError as e:
+        if _REQUIRE_RUST:
+            raise ImportError(
+                "Rust parsers required but not available. "
+                "Build with: cd pdfminer_rust && maturin develop"
+            ) from e
+        log.warning(
+            "Rust parsers not available, falling back to Python. "
+            "For better performance, build with: cd pdfminer_rust && maturin develop"
+        )
 
 
 # Adding aliases for these exceptions for backwards compatibility
@@ -166,6 +198,9 @@ class PSBaseParser:
     def __init__(self, fp: BinaryIO) -> None:
         self.fp = fp
         self.eof = False
+        self._rust_tokenizer: Any = None
+        if _USE_RUST_TOKENIZER and RustTokenizer is not None:
+            self._rust_tokenizer = RustTokenizer()
         self.seek(0)
 
     def __repr__(self) -> str:
@@ -188,6 +223,8 @@ class PSBaseParser:
         self._curtokenpos = 0
         self._tokens: list[tuple[int, PSBaseParserToken]] = []
         self.eof = False
+        if self._rust_tokenizer is not None:
+            self._rust_tokenizer.reset()
 
     def fillbuf(self) -> bool:
         if self.charpos < len(self.buf):
@@ -486,17 +523,41 @@ class PSBaseParser:
         while not self._tokens:
             try:
                 changed_stream = self.fillbuf()
-                if changed_stream and self._curtoken:
-                    # Fixes #1157: if the stream is changed in the middle of a token,
-                    # try to parse it by tacking on whitespace.
-                    self._parse1(b"\n", 0)
+                if self._rust_tokenizer is not None:
+                    # Use Rust tokenizer
+                    if changed_stream and self._rust_tokenizer.has_partial_token():
+                        # Handle buffer boundary in middle of token
+                        raw_tokens = self._rust_tokenizer.tokenize_byte(
+                            ord(b"\n"), self.bufpos
+                        )
+                        self._convert_rust_tokens(raw_tokens)
+                    else:
+                        # Parse one token at a time (required for nextline() compat)
+                        new_charpos, maybe_token = self._rust_tokenizer.tokenize_one(
+                            self.buf, self.charpos, self.bufpos
+                        )
+                        self.charpos = new_charpos
+                        if maybe_token is not None:
+                            self._convert_rust_tokens([maybe_token])
                 else:
-                    self.charpos = self._parse1(self.buf, self.charpos)
+                    # Use Python tokenizer
+                    if changed_stream and self._curtoken:
+                        # Fixes #1157: if the stream is changed in the middle of
+                        # a token, try to parse it by tacking on whitespace.
+                        self._parse1(b"\n", 0)
+                    else:
+                        self.charpos = self._parse1(self.buf, self.charpos)
             except PSEOF:
                 # If we hit EOF in the middle of a token, try to parse
                 # it by tacking on whitespace, and delay raising PSEOF
                 # until next time around
-                self.charpos = self._parse1(b"\n", 0)
+                if self._rust_tokenizer is not None:
+                    raw_tokens = self._rust_tokenizer.tokenize_byte(
+                        ord(b"\n"), self.bufpos
+                    )
+                    self._convert_rust_tokens(raw_tokens)
+                else:
+                    self.charpos = self._parse1(b"\n", 0)
                 self.eof = True
                 # Oh, so there wasn't actually a token there? OK.
                 if not self._tokens:
@@ -504,6 +565,33 @@ class PSBaseParser:
         token = self._tokens.pop(0)
         log.debug("nexttoken: %r", token)
         return token
+
+    def _convert_rust_tokens(
+        self, raw_tokens: list[tuple[int, str, Any]]
+    ) -> None:
+        """Convert raw tokens from Rust tokenizer to Python objects."""
+        for pos, ttype, data in raw_tokens:
+            token: PSBaseParserToken
+            if ttype == "int":
+                token = data
+            elif ttype == "float":
+                token = data
+            elif ttype == "bool":
+                token = data
+            elif ttype == "bytes":
+                token = data
+            elif ttype == "literal":
+                # Intern the literal
+                try:
+                    name: str | bytes = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    name = data
+                token = LIT(name)
+            elif ttype == "keyword":
+                token = KWD(data)
+            else:
+                continue
+            self._tokens.append((pos, token))
 
 
 # Stack slots may by occupied by any of:
@@ -522,6 +610,9 @@ PSStackEntry = tuple[int, PSStackType[ExtraT]]
 class PSStackParser(PSBaseParser, Generic[ExtraT]):
     def __init__(self, fp: BinaryIO) -> None:
         PSBaseParser.__init__(self, fp)
+        self._rust_stack_parser: Any = None
+        if _USE_RUST_STACK_PARSER and RustStackParser is not None:
+            self._rust_stack_parser = RustStackParser()
         self.reset()
 
     def reset(self) -> None:
@@ -529,6 +620,8 @@ class PSStackParser(PSBaseParser, Generic[ExtraT]):
         self.curtype: str | None = None
         self.curstack: list[PSStackEntry[ExtraT]] = []
         self.results: list[PSStackEntry[ExtraT]] = []
+        if hasattr(self, "_rust_stack_parser") and self._rust_stack_parser is not None:
+            self._rust_stack_parser.reset()
 
     def seek(self, pos: int) -> None:
         PSBaseParser.seek(self, pos)
@@ -578,6 +671,168 @@ class PSStackParser(PSBaseParser, Generic[ExtraT]):
 
         :return: keywords, literals, strings, numbers, arrays and dictionaries.
         """
+        if self._rust_stack_parser is not None:
+            return self._nextobject_rust()
+        return self._nextobject_python()
+
+    def _convert_rust_value(self, obj: Any) -> Any:
+        """Convert Rust-returned value to Python type.
+
+        Recursively converts:
+        - ("literal", bytes) -> PSLiteral via LIT()
+        - ("keyword", bytes) -> PSKeyword via KWD()
+        - ("objref", objid, genno) -> PDFObjRef (if doc available)
+        - lists -> recursively converted lists
+        - dicts -> dicts with converted values
+        """
+        if isinstance(obj, tuple) and len(obj) >= 2:
+            tag = obj[0]
+            if tag == "literal" and len(obj) == 2:
+                data = obj[1]
+                try:
+                    name: str | bytes = data.decode("utf-8")
+                except (UnicodeDecodeError, AttributeError):
+                    name = data
+                return LIT(name)
+            elif tag == "keyword" and len(obj) == 2:
+                return KWD(obj[1])
+            elif tag == "objref" and len(obj) == 3:
+                # PDF object reference - convert to PDFObjRef if doc available
+                _, objid, genno = obj
+                doc = getattr(self, "doc", None)
+                if doc is not None:
+                    # Import here to avoid circular imports
+                    from pdfminer.pdftypes import PDFObjRef
+
+                    return PDFObjRef(doc, objid)
+                # No doc, return as marker tuple for caller to handle
+                return obj
+            elif tag == "dict_error" and len(obj) == 2:
+                # Invalid dict with odd number of elements - raise error
+                _, items = obj
+                error_msg = f"Invalid dictionary construct: {items!r}"
+                raise PSSyntaxError(error_msg)
+        if isinstance(obj, list):
+            return [self._convert_rust_value(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: self._convert_rust_value(v) for k, v in obj.items()}
+        return obj
+
+    def _nextobject_rust(self) -> PSStackEntry[ExtraT]:
+        """Rust-accelerated object parsing."""
+        while not self.results:
+            try:
+                self.fillbuf()
+            except PSEOF:
+                # Handle EOF with partial state
+                if self._rust_stack_parser.has_partial():
+                    # Try to finalize with newline
+                    new_pos, maybe_obj = self._rust_stack_parser.nextobject(
+                        b"\n", 0, self.bufpos
+                    )
+                    if maybe_obj is not None:
+                        pos, raw_obj = maybe_obj
+                        obj = self._convert_rust_value(raw_obj)
+                        self._process_rust_object(pos, obj)
+                        if not self.context:
+                            self.flush()
+                self.eof = True
+                if not self.results:
+                    raise
+                break
+
+            # Get next object from Rust parser
+            new_pos, maybe_obj = self._rust_stack_parser.nextobject(
+                self.buf, self.charpos, self.bufpos
+            )
+            self.charpos = new_pos
+
+            if maybe_obj is None:
+                # No complete object yet, need more data
+                continue
+
+            pos, raw_obj = maybe_obj
+            obj = self._convert_rust_value(raw_obj)
+            self._process_rust_object(pos, obj)
+
+            # Flush if not in a context (building array/dict/proc)
+            if not self.context:
+                self.flush()
+
+        obj = self.results.pop(0)
+        try:
+            log.debug("nextobject: %r", obj)
+        except Exception:
+            log.debug("nextobject: (unprintable object)")
+        return obj
+
+    def _process_rust_object(self, pos: int, obj: Any) -> None:
+        """Process a single object from the Rust parser."""
+        if isinstance(obj, PSKeyword):
+            # Handle special keywords that need context management
+            if obj is KEYWORD_ARRAY_BEGIN:
+                # begin array
+                self.start_type(pos, "a")
+            elif obj is KEYWORD_ARRAY_END:
+                # end array
+                try:
+                    self.push(self.end_type("a"))
+                except PSTypeError:
+                    if settings.STRICT:
+                        raise
+            elif obj is KEYWORD_DICT_BEGIN:
+                # begin dictionary
+                self.start_type(pos, "d")
+            elif obj is KEYWORD_DICT_END:
+                # end dictionary
+                try:
+                    (pos, objs) = self.end_type("d")
+                    if len(objs) % 2 != 0:
+                        error_msg = f"Invalid dictionary construct: {objs!r}"
+                        raise PSSyntaxError(error_msg)
+                    d = {
+                        literal_name(k): v
+                        for (k, v) in choplist(2, objs)
+                        if v is not None
+                    }
+                    self.push((pos, d))
+                except PSTypeError:
+                    if settings.STRICT:
+                        raise
+            elif obj is KEYWORD_PROC_BEGIN:
+                # begin procedure
+                self.start_type(pos, "p")
+            elif obj is KEYWORD_PROC_END:
+                # end procedure
+                try:
+                    self.push(self.end_type("p"))
+                except PSTypeError:
+                    if settings.STRICT:
+                        raise
+            else:
+                # Other keywords go to do_keyword
+                log.debug(
+                    "do_keyword: pos=%r, token=%r, stack=%r",
+                    pos,
+                    obj,
+                    self.curstack,
+                )
+                self.do_keyword(pos, obj)
+        elif isinstance(obj, (int, float, bool, str, bytes, PSLiteral, list, dict)):
+            # Push value onto stack
+            self.push((pos, obj))
+        else:
+            # Unknown type - treat as keyword
+            log.error(
+                "unknown object: pos=%r, obj=%r, stack=%r",
+                pos,
+                obj,
+                self.curstack,
+            )
+            self.do_keyword(pos, obj)
+
+    def _nextobject_python(self) -> PSStackEntry[ExtraT]:
+        """Original Python implementation of nextobject."""
         while not self.results:
             (pos, token) = self.nexttoken()
             if isinstance(token, (int, float, bool, str, bytes, PSLiteral)):

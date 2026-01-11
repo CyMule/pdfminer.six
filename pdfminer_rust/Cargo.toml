@@ -1,0 +1,15 @@
+[package]
+name = "pdfminer_rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "pdfminer_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+
+[profile.release]
+lto = true
+codegen-units = 1

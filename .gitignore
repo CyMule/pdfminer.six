@@ -32,3 +32,4 @@ poetry.lock
 .claude/
 .junie/
 *~
+pdfminer_rust/target/
