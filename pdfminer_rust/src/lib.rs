@@ -1,7 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+mod matrix;
 mod stack_parser;
+
+pub use matrix::MatrixOps;
 pub use stack_parser::RustStackParser;
 
 /// Parse state for the tokenizer state machine
@@ -718,6 +721,7 @@ impl RustTokenizer {
 fn pdfminer_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustTokenizer>()?;
     m.add_class::<RustStackParser>()?;
+    m.add_class::<MatrixOps>()?;
     Ok(())
 }
 

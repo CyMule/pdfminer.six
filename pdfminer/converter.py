@@ -35,7 +35,7 @@ from pdfminer.layout import (
     TextGroupElement,
 )
 from pdfminer.pdfcolor import PDFColorSpace
-from pdfminer.pdfdevice import PDFTextDevice
+from pdfminer.pdfdevice import PDFTextDevice, PDFTextSeq
 from pdfminer.pdfexceptions import PDFValueError
 from pdfminer.pdffont import PDFFont, PDFUnicodeNotDefined
 from pdfminer.pdfinterp import PDFGraphicState, PDFResourceManager
@@ -53,9 +53,18 @@ from pdfminer.utils import (
     enc,
     make_compat_str,
     mult_matrix,
+    translate_matrix,
 )
 
 log = logging.getLogger(__name__)
+
+# Try to import Rust batch matrix operations
+try:
+    from pdfminer_rust import MatrixOps
+    _USE_RUST_MATRIX = True
+except ImportError:
+    _USE_RUST_MATRIX = False
+    MatrixOps = None  # type: ignore
 
 
 class PDFLayoutAnalyzer(PDFTextDevice):
@@ -262,6 +271,100 @@ class PDFLayoutAnalyzer(PDFTextDevice):
         )
         self.cur_item.add(item)
         return item.adv
+
+    def render_string_horizontal(
+        self,
+        seq: "PDFTextSeq",
+        matrix: Matrix,
+        pos: Point,
+        font: PDFFont,
+        fontsize: float,
+        scaling: float,
+        charspace: float,
+        wordspace: float,
+        rise: float,
+        dxscale: float,
+        ncs: PDFColorSpace,
+        graphicstate: PDFGraphicState,
+    ) -> Point:
+        """Render horizontal text with batch matrix operations when available."""
+        if not _USE_RUST_MATRIX or font.is_vertical():
+            # Fall back to base implementation
+            from pdfminer.pdfdevice import PDFTextDevice
+            return PDFTextDevice.render_string_horizontal(
+                self, seq, matrix, pos, font, fontsize, scaling,
+                charspace, wordspace, rise, dxscale, ncs, graphicstate
+            )
+
+        # Batch rendering with Rust matrix operations
+        (x, y) = pos
+        descent = font.get_descent() * fontsize
+
+        # Collect all character data
+        char_data: list[tuple[float, int, str, float, float]] = []
+        current_x = x
+        needcharspace = False
+
+        for obj in seq:
+            if isinstance(obj, (int, float)):
+                current_x -= obj * dxscale
+                needcharspace = True
+            elif isinstance(obj, bytes):
+                for cid in font.decode(obj):
+                    if needcharspace:
+                        current_x += charspace
+                    try:
+                        text = font.to_unichr(cid)
+                        assert isinstance(text, str)
+                    except PDFUnicodeNotDefined:
+                        text = self.handle_undefined_char(font, cid)
+                    textwidth = font.char_width(cid)
+                    adv = textwidth * fontsize * scaling
+                    # Store: (x_pos, cid, text, textwidth, adv)
+                    char_data.append((current_x, cid, text, textwidth, adv))
+                    current_x += adv
+                    if cid == 32 and wordspace:
+                        current_x += wordspace
+                    needcharspace = True
+
+        if not char_data:
+            return (current_x, y)
+
+        # Compute local bboxes and prepare for batch transformation
+        local_bboxes: list[tuple[float, float, float, float, float, float]] = []
+        for (char_x, cid, text, textwidth, adv) in char_data:
+            local_bbox = (0.0, descent + rise, adv, descent + rise + fontsize)
+            # (x_offset, y_offset, bbox_x0, bbox_y0, bbox_x1, bbox_y1)
+            local_bboxes.append((char_x, y, local_bbox[0], local_bbox[1],
+                                 local_bbox[2], local_bbox[3]))
+
+        # Batch transform all bboxes in Rust
+        assert MatrixOps is not None
+        transformed = MatrixOps.batch_transform_chars(
+            (matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]),
+            local_bboxes
+        )
+
+        # Create LTChar objects with pre-computed bboxes
+        for i, (char_x, cid, text, textwidth, adv) in enumerate(char_data):
+            char_matrix, bbox = transformed[i]
+            textdisp = font.char_disp(cid)
+            item = LTChar(
+                tuple(char_matrix),  # type: ignore
+                font,
+                fontsize,
+                scaling,
+                rise,
+                text,
+                textwidth,
+                textdisp,
+                ncs,
+                graphicstate,
+                _precomputed_bbox=bbox,
+            )
+            self.cur_item.add(item)
+
+        return (current_x, y)
 
     def handle_undefined_char(self, font: PDFFont, cid: int) -> str:
         log.debug("undefined: %r, %r", font, cid)

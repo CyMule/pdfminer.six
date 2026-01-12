@@ -359,6 +359,8 @@ class LTChar(LTComponent, LTText):
         textdisp: float | tuple[float | None, float],
         ncs: PDFColorSpace,
         graphicstate: PDFGraphicState,
+        *,
+        _precomputed_bbox: Rect | None = None,
     ) -> None:
         LTText.__init__(self)
         self._text = text
@@ -367,21 +369,27 @@ class LTChar(LTComponent, LTText):
         self.ncs = ncs
         self.graphicstate = graphicstate
         self.adv = textwidth * fontsize * scaling
-        # compute the boundary rectangle.
-        if font.is_vertical():
-            # vertical
-            assert isinstance(textdisp, tuple)
-            (vx, vy) = textdisp
-            vx = fontsize * 0.5 if vx is None else vx * fontsize * 0.001
-            vy = (1000 - vy) * fontsize * 0.001
-            bbox = (-vx, vy + rise + self.adv, -vx + fontsize, vy + rise)
-        else:
-            # horizontal
-            descent = font.get_descent() * fontsize
-            bbox = (0, descent + rise, self.adv, descent + rise + fontsize)
         (a, b, c, d, _e, _f) = self.matrix
         self.upright = a * d * scaling > 0 and b * c <= 0
-        (x0, y0, x1, y1) = apply_matrix_rect(self.matrix, bbox)
+
+        if _precomputed_bbox is not None:
+            # Use pre-computed bbox (from batch Rust operations)
+            (x0, y0, x1, y1) = _precomputed_bbox
+        else:
+            # Compute the boundary rectangle
+            if font.is_vertical():
+                # vertical
+                assert isinstance(textdisp, tuple)
+                (vx, vy) = textdisp
+                vx = fontsize * 0.5 if vx is None else vx * fontsize * 0.001
+                vy = (1000 - vy) * fontsize * 0.001
+                local_bbox = (-vx, vy + rise + self.adv, -vx + fontsize, vy + rise)
+            else:
+                # horizontal
+                descent = font.get_descent() * fontsize
+                local_bbox = (0, descent + rise, self.adv, descent + rise + fontsize)
+            (x0, y0, x1, y1) = apply_matrix_rect(self.matrix, local_bbox)
+
         if x1 < x0:
             (x0, x1) = (x1, x0)
         if y1 < y0:
