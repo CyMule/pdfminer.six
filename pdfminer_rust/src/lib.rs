@@ -1,9 +1,11 @@
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+mod layout_ops;
 mod matrix;
 mod stack_parser;
 
+pub use layout_ops::LayoutOps;
 pub use matrix::MatrixOps;
 pub use stack_parser::RustStackParser;
 
@@ -722,6 +724,7 @@ fn pdfminer_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustTokenizer>()?;
     m.add_class::<RustStackParser>()?;
     m.add_class::<MatrixOps>()?;
+    m.add_class::<LayoutOps>()?;
     Ok(())
 }
 

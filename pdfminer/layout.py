@@ -29,6 +29,24 @@ from pdfminer.utils import (
     uniq,
 )
 
+# Try to import Rust batch layout operations
+# Respect PDFMINER_DISABLE_RUST environment variable
+import os
+
+_DISABLE_RUST = os.environ.get("PDFMINER_DISABLE_RUST", "")
+
+if _DISABLE_RUST:
+    _USE_RUST_LAYOUT = False
+    LayoutOps = None  # type: ignore[misc, assignment]
+else:
+    try:
+        from pdfminer_rust import LayoutOps
+
+        _USE_RUST_LAYOUT = True
+    except ImportError:
+        _USE_RUST_LAYOUT = False
+        LayoutOps = None  # type: ignore[misc, assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -713,20 +731,102 @@ class LTLayoutContainer(LTContainer[LTComponent]):
         laparams: LAParams,
         objs: Iterable[LTComponent],
     ) -> Iterator[LTTextLine]:
+        # Materialize iterator to list for batch processing
+        obj_list = list(objs)
+
+        if not obj_list:
+            return
+
+        # Use Rust batch alignment if available and we have enough objects
+        if _USE_RUST_LAYOUT and len(obj_list) >= 2:
+            yield from self._group_objects_rust(laparams, obj_list)
+        else:
+            yield from self._group_objects_python(laparams, obj_list)
+
+    def _group_objects_rust(
+        self,
+        laparams: LAParams,
+        obj_list: list[LTComponent],
+    ) -> Iterator[LTTextLine]:
+        """Optimized grouping using Rust batch alignment computation."""
+        # Extract bboxes for batch processing
+        bboxes = [(obj.x0, obj.y0, obj.x1, obj.y1) for obj in obj_list]
+
+        # Compute all alignment decisions in one Rust call
+        alignments = LayoutOps.compute_alignments(
+            bboxes,
+            laparams.line_overlap,
+            laparams.char_margin,
+            laparams.detect_vertical,
+        )
+
+        # Constants for alignment types
+        ALIGN_NONE = 0
+        ALIGN_HORIZONTAL = 1
+        ALIGN_VERTICAL = 2
+
+        line: LTTextLine | None = None
+        line_type: int | None = None  # Track current line type
+
+        for i, obj1 in enumerate(obj_list):
+            if i == 0:
+                # First object - no alignment to check yet
+                continue
+
+            alignment = alignments[i - 1]
+            halign = alignment == ALIGN_HORIZONTAL
+            valign = alignment == ALIGN_VERTICAL
+            obj0 = obj_list[i - 1]
+
+            if line is not None:
+                # We have an active line
+                if (halign and line_type == ALIGN_HORIZONTAL) or (
+                    valign and line_type == ALIGN_VERTICAL
+                ):
+                    # Continue current line
+                    line.add(obj1)
+                else:
+                    # End current line
+                    yield line
+                    line = None
+                    line_type = None
+            else:
+                # No active line - start new one if aligned
+                if valign and not halign:
+                    line = LTTextLineVertical(laparams.word_margin)
+                    line.add(obj0)
+                    line.add(obj1)
+                    line_type = ALIGN_VERTICAL
+                elif halign and not valign:
+                    line = LTTextLineHorizontal(laparams.word_margin)
+                    line.add(obj0)
+                    line.add(obj1)
+                    line_type = ALIGN_HORIZONTAL
+                else:
+                    # No alignment - obj0 is a single-char line
+                    single_line = LTTextLineHorizontal(laparams.word_margin)
+                    single_line.add(obj0)
+                    yield single_line
+
+        # Handle the last object(s)
+        if line is not None:
+            yield line
+        else:
+            # Last object wasn't part of a line
+            last_line = LTTextLineHorizontal(laparams.word_margin)
+            last_line.add(obj_list[-1])
+            yield last_line
+
+    def _group_objects_python(
+        self,
+        laparams: LAParams,
+        obj_list: list[LTComponent],
+    ) -> Iterator[LTTextLine]:
+        """Original Python implementation for grouping objects."""
         obj0 = None
         line: LTTextLine | None = None
-        for obj1 in objs:
+        for obj1 in obj_list:
             if obj0 is not None:
-                # halign: obj0 and obj1 is horizontally aligned.
-                #
-                #   +------+ - - -
-                #   | obj0 | - - +------+   -
-                #   |      |     | obj1 |   | (line_overlap)
-                #   +------+ - - |      |   -
-                #          - - - +------+
-                #
-                #          |<--->|
-                #        (char_margin)
                 halign = (
                     obj0.is_voverlap(obj1)
                     and min(obj0.height, obj1.height) * laparams.line_overlap
@@ -735,20 +835,6 @@ class LTLayoutContainer(LTContainer[LTComponent]):
                     < max(obj0.width, obj1.width) * laparams.char_margin
                 )
 
-                # valign: obj0 and obj1 is vertically aligned.
-                #
-                #   +------+
-                #   | obj0 |
-                #   |      |
-                #   +------+ - - -
-                #     |    |     | (char_margin)
-                #     +------+ - -
-                #     | obj1 |
-                #     |      |
-                #     +------+
-                #
-                #     |<-->|
-                #   (line_overlap)
                 valign = (
                     laparams.detect_vertical
                     and obj0.is_hoverlap(obj1)
