@@ -59,12 +59,22 @@ from pdfminer.utils import (
 log = logging.getLogger(__name__)
 
 # Try to import Rust batch matrix operations
-try:
-    from pdfminer_rust import MatrixOps
-    _USE_RUST_MATRIX = True
-except ImportError:
+# Respect PDFMINER_DISABLE_RUST environment variable
+import os
+
+_DISABLE_RUST = os.environ.get("PDFMINER_DISABLE_RUST", "")
+
+if _DISABLE_RUST:
     _USE_RUST_MATRIX = False
-    MatrixOps = None  # type: ignore
+    MatrixOps = None  # type: ignore[misc, assignment]
+else:
+    try:
+        from pdfminer_rust import MatrixOps
+
+        _USE_RUST_MATRIX = True
+    except ImportError:
+        _USE_RUST_MATRIX = False
+        MatrixOps = None  # type: ignore[misc, assignment]
 
 
 class PDFLayoutAnalyzer(PDFTextDevice):
