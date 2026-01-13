@@ -335,10 +335,15 @@ class PSBaseParser:
         return j
 
     def _parse_literal_hex(self, s: bytes, i: int) -> int:
-        c = s[i : i + 1]
-        if HEX.match(c) and len(self.hex) < 2:
-            self.hex += c
-            return i + 1
+        # Check bounds first to mimic behavior of s[i:i+1] -> b'' when out of range
+        if i < len(s):
+            v = s[i]
+            # Manual hex-digit check avoids a regex.match call for a single byte
+            if ((48 <= v <= 57) or (65 <= v <= 70) or (97 <= v <= 102)) and len(
+                self.hex
+            ) < 2:
+                self.hex += bytes((v,))
+                return i + 1
         if self.hex:
             self._curtoken += bytes((int(self.hex, 16),))
         self._parse1 = self._parse_literal
