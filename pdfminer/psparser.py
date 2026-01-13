@@ -381,13 +381,14 @@ class PSBaseParser:
         else:
             self._curtoken += s[i:]
             return len(s)
-        if self._curtoken == b"true":
+        curtoken = self._curtoken
+        if curtoken == b"true":
             token: bool | PSKeyword = True
-        elif self._curtoken == b"false":
+        elif curtoken == b"false":
             token = False
         else:
-            token = KWD(self._curtoken)
-        self._add_token(token)
+            token = KWD(curtoken)
+        self._tokens.append((self._curtokenpos, token))
         self._parse1 = self._parse_main
         return j
 
