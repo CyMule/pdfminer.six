@@ -447,9 +447,11 @@ class PSBaseParser:
         return i + 1
 
     def _parse_wopen(self, s: bytes, i: int) -> int:
-        c = s[i : i + 1]
-        if c == b"<":
-            self._add_token(KEYWORD_DICT_BEGIN)
+        # original code used c = s[i : i + 1] which yields b'' at end of buffer;
+        # preserve that behavior by guarding the index.
+        if i < len(s) and s[i] == 60:  # b'<'
+            # inline the token append to avoid the hot function-call overhead
+            self._tokens.append((self._curtokenpos, KEYWORD_DICT_BEGIN))
             self._parse1 = self._parse_main
             i += 1
         else:
