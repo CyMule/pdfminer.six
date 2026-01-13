@@ -398,20 +398,22 @@ class PSBaseParser:
             return len(s)
         j = m.start(0)
         self._curtoken += s[i:j]
-        c = s[j : j + 1]
-        if c == b"\\":
+        # Use integer checks to avoid creating a one-byte bytes object repeatedly
+        c0 = s[j]
+        if c0 == 92:  # ord('\\')
             self.oct = b""
             self._parse1 = self._parse_string_1
             return j + 1
-        if c == b"(":
+        if c0 == 40:  # ord('(')
             self.paren += 1
-            self._curtoken += c
+            # append the one-byte bytes
+            self._curtoken += b"("
             return j + 1
-        if c == b")":
+        if c0 == 41:  # ord(')')
             self.paren -= 1
             if self.paren:
                 # WTF, they said balanced parens need no special treatment.
-                self._curtoken += c
+                self._curtoken += b")"
                 return j + 1
         self._add_token(self._curtoken)
         self._parse1 = self._parse_main
