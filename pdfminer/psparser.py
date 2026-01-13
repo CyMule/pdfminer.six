@@ -47,9 +47,10 @@ class PSLiteral(PSObject):
     def __init__(self, name: NameType) -> None:
         self.name = name
 
+        self._repr = f"/{name!r}"
+
     def __repr__(self) -> str:
-        name = self.name
-        return f"/{name!r}"
+        return self._repr
 
 
 class PSKeyword(PSObject):
