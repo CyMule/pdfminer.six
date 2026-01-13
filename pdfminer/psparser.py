@@ -15,6 +15,10 @@ from typing import (
 from pdfminer import psexceptions, settings
 from pdfminer.utils import choplist
 
+# Precompute nibble value table for fast ASCII hex decoding.
+# Values are 0-15 for hex digits, and -1 for non-hex bytes.
+_HEXVAL: list[int] = [-1] * 256
+
 log = logging.getLogger(__name__)
 
 
@@ -130,6 +134,33 @@ def keyword_name(x: Any) -> Any:
     else:
         name = str(x.name, "utf-8", "ignore")
     return name
+
+
+def _convert_hexpairs_preserving_nonhex(data: bytes) -> bytes:
+    """
+    Convert consecutive pairs of hex-digit ASCII bytes into their single-byte
+    binary representation, leaving any non-hex or unmatched characters
+    unchanged. This mirrors the behaviour of using HEX_PAIR.sub(...) on the
+    byte string: only valid hex pairs are replaced, other characters remain.
+    """
+    n = len(data)
+    if n == 0:
+        return b""
+    out = bytearray()
+    i = 0
+    hv = _HEXVAL  # local ref
+    while i < n:
+        c = data[i]
+        if i + 1 < n:
+            v1 = hv[c]
+            v2 = hv[data[i + 1]]
+            if v1 != -1 and v2 != -1:
+                out.append((v1 << 4) | v2)
+                i += 2
+                continue
+        out.append(c)
+        i += 1
+    return bytes(out)
 
 
 EOL = re.compile(rb"[\r\n]")
@@ -471,10 +502,11 @@ class PSBaseParser:
             return len(s)
         j = m.start(0)
         self._curtoken += s[i:j]
-        token = HEX_PAIR.sub(
-            lambda m: bytes((int(m.group(0), 16),)),
-            SPC.sub(b"", self._curtoken),
-        )
+        # Remove spacing, then convert hex pairs to bytes while leaving any
+        # non-hex characters (or unmatched final nibble) untouched. This
+        # reproduces the original behavior of HEX_PAIR.sub(..., SPC.sub(...)).
+        cleaned = SPC.sub(b"", self._curtoken)
+        token = _convert_hexpairs_preserving_nonhex(cleaned)
         self._add_token(token)
         self._parse1 = self._parse_main
         return j
