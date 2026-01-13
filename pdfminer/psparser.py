@@ -258,45 +258,45 @@ class PSBaseParser:
         if not m:
             return len(s)
         j = m.start(0)
-        c = s[j : j + 1]
+        c = s[j]
         self._curtokenpos = self.bufpos + j
-        if c == b"%":
+        if c == 37:  # b"%"
             self._curtoken = b"%"
             self._parse1 = self._parse_comment
             return j + 1
-        elif c == b"/":
+        elif c == 47:  # b"/"
             self._curtoken = b""
             self._parse1 = self._parse_literal
             return j + 1
-        elif c in b"-+" or c.isdigit():
-            self._curtoken = c
+        elif c == 45 or c == 43 or 48 <= c <= 57:  # b"-", b"+", or digit
+            self._curtoken = s[j : j + 1]
             self._parse1 = self._parse_number
             return j + 1
-        elif c == b".":
-            self._curtoken = c
+        elif c == 46:  # b"."
+            self._curtoken = s[j : j + 1]
             self._parse1 = self._parse_float
             return j + 1
-        elif c.isalpha():
-            self._curtoken = c
+        elif (65 <= c <= 90) or (97 <= c <= 122):  # isalpha
+            self._curtoken = s[j : j + 1]
             self._parse1 = self._parse_keyword
             return j + 1
-        elif c == b"(":
+        elif c == 40:  # b"("
             self._curtoken = b""
             self.paren = 1
             self._parse1 = self._parse_string
             return j + 1
-        elif c == b"<":
+        elif c == 60:  # b"<"
             self._curtoken = b""
             self._parse1 = self._parse_wopen
             return j + 1
-        elif c == b">":
+        elif c == 62:  # b">"
             self._curtoken = b""
             self._parse1 = self._parse_wclose
             return j + 1
-        elif c == b"\x00":
+        elif c == 0:  # b"\x00"
             return j + 1
         else:
-            self._add_token(KWD(c))
+            self._add_token(KWD(s[j : j + 1]))
             return j + 1
 
     def _add_token(self, obj: PSBaseParserToken) -> None:
