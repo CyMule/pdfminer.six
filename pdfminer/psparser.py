@@ -202,7 +202,7 @@ class PSBaseParser:
 
     def nextline(self) -> tuple[int, bytes]:
         """Fetches a next line that ends either with \\r or \\n."""
-        linebuf = b""
+        parts: list[bytes] = []
         linepos = self.bufpos + self.charpos
         eol = False
         while 1:
@@ -211,20 +211,30 @@ class PSBaseParser:
                 c = self.buf[self.charpos : self.charpos + 1]
                 # handle b'\r\n'
                 if c == b"\n":
-                    linebuf += c
+                    parts.append(c)
                     self.charpos += 1
                 break
-            m = EOL.search(self.buf, self.charpos)
-            if m:
-                linebuf += self.buf[self.charpos : m.end(0)]
-                self.charpos = m.end(0)
-                if linebuf[-1:] == b"\r":
+            start = self.charpos
+            i_n = self.buf.find(b"\n", start)
+            i_r = self.buf.find(b"\r", start)
+            if i_n == -1:
+                mpos = i_r
+            elif i_r == -1:
+                mpos = i_n
+            else:
+                mpos = i_n if i_n < i_r else i_r
+
+            if mpos != -1:
+                parts.append(self.buf[start : mpos + 1])
+                self.charpos = mpos + 1
+                if parts[-1][-1:] == b"\r":
                     eol = True
                 else:
                     break
             else:
-                linebuf += self.buf[self.charpos :]
+                parts.append(self.buf[start:])
                 self.charpos = len(self.buf)
+        linebuf = b"".join(parts)
         log.debug(f"nextline: {linepos!r}, {linebuf!r}")
 
         return (linepos, linebuf)
