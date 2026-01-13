@@ -47,6 +47,15 @@ class PSLiteral(PSObject):
     def __init__(self, name: NameType) -> None:
         self.name = name
 
+        # Cache the string representation to avoid repeated conversions
+        if isinstance(name, str):
+            self._str_name = name
+        else:
+            try:
+                self._str_name = str(name, "utf-8")
+            except UnicodeDecodeError:
+                self._str_name = str(name)
+
     def __repr__(self) -> str:
         name = self.name
         return f"/{name!r}"
@@ -109,12 +118,7 @@ KEYWORD_DICT_END = KWD(b">>")
 
 def literal_name(x: Any) -> str:
     if isinstance(x, PSLiteral):
-        if isinstance(x.name, str):
-            return x.name
-        try:
-            return str(x.name, "utf-8")
-        except UnicodeDecodeError:
-            return str(x.name)
+        return x._str_name
     else:
         if settings.STRICT:
             raise PSTypeError(f"Literal required: {x!r}")
