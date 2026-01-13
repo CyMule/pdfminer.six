@@ -303,12 +303,24 @@ class PSBaseParser:
         self._tokens.append((self._curtokenpos, obj))
 
     def _parse_comment(self, s: bytes, i: int) -> int:
-        m = EOL.search(s, i)
-        if not m:
+        # Try simple byte searches for end-of-line markers instead of regex.
+        # This preserves behavior for '\n' and '\r' while avoiding regex overhead.
+        n1 = s.find(b"\n", i)
+        n2 = s.find(b"\r", i)
+        if n1 == -1 and n2 == -1:
+            # No EOL found in the remaining buffer.
             self._curtoken += s[i:]
             return len(s)
-        j = m.start(0)
-        self._curtoken += s[i:j]
+        # pick the earliest (non -1) index
+        if n1 == -1:
+            j = n2
+        elif n2 == -1:
+            j = n1
+        else:
+            j = n1 if n1 < n2 else n2
+
+        if j > i:
+            self._curtoken += s[i:j]
         self._parse1 = self._parse_main
         # We ignore comments.
         # self._tokens.append(self._curtoken)
