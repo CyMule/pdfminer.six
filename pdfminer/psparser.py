@@ -368,8 +368,10 @@ class PSBaseParser:
             return len(s)
         j = m.start(0)
         self._curtoken += s[i:j]
-        with contextlib.suppress(ValueError):
+        try:
             self._add_token(float(self._curtoken))
+        except ValueError:
+            pass
         self._parse1 = self._parse_main
         return j
 
