@@ -430,12 +430,17 @@ class PSBaseParser:
         elif self.oct:
             chrcode = int(self.oct, 8)
             assert chrcode < 256, f"Invalid octal {self.oct!r} ({chrcode})"
-            self._curtoken += bytes((chrcode,))
+            # ensure mutable accumulator and append byte efficiently
+            if not isinstance(self._curtoken, bytearray):
+                self._curtoken = bytearray(self._curtoken)
+            self._curtoken.append(chrcode)
             self._parse1 = self._parse_string
             return i
 
         elif c in ESC_STRING:
-            self._curtoken += bytes((ESC_STRING[c],))
+            if not isinstance(self._curtoken, bytearray):
+                self._curtoken = bytearray(self._curtoken)
+            self._curtoken.append(ESC_STRING[c])
 
         elif c == b"\r" and len(s) > i + 1 and s[i + 1 : i + 2] == b"\n":
             # If current and next character is \r\n skip both because enters
