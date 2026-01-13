@@ -351,13 +351,17 @@ class PSBaseParser:
             return len(s)
         j = m.start(0)
         self._curtoken += s[i:j]
-        c = s[j : j + 1]
-        if c == b".":
-            self._curtoken += c
+        c0 = s[j]
+        if c0 == 46:  # b'.'
+            # append single byte without creating intermediate variable
+            self._curtoken += bytes((c0,))
             self._parse1 = self._parse_float
             return j + 1
-        with contextlib.suppress(ValueError):
+        # Try int conversion directly; suppressing ValueError via try/except
+        try:
             self._add_token(int(self._curtoken))
+        except ValueError:
+            pass
         self._parse1 = self._parse_main
         return j
 
