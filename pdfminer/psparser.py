@@ -65,6 +65,7 @@ class PSKeyword(PSObject):
 
     def __init__(self, name: bytes) -> None:
         self.name = name
+        self._decoded_name = str(name, "utf-8", "ignore")
 
     def __repr__(self) -> str:
         name = self.name
@@ -128,7 +129,7 @@ def keyword_name(x: Any) -> Any:
         else:
             name = x
     else:
-        name = str(x.name, "utf-8", "ignore")
+        name = x._decoded_name
     return name
 
 
